@@ -91,3 +91,5 @@ ENV/
 
 # test
 test/
+
+*.swp

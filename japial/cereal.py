@@ -39,7 +39,7 @@ class Cereal(object):
     def build_relationships(self, model):
         model_relationships  = model.__mapper__.relationships.items()
         is_a_list            = len(model_relationships) > 1
-        buided_relationships = [] if is_a_list else {}
+        builded_relationships = [] if is_a_list else None
 
         # this model does not have a relationship
         if len(model_relationships) == 0:
@@ -57,17 +57,20 @@ class Cereal(object):
                     builded = self.build_sqlalchemy_model(relation, with_relationship=False)
                     this_relation.append(builded)
             else:
-                if(isinstance(resource, list)):
-                    this_relation = self.build_sqlalchemy_model(resource[0], with_relationship=False)
+                if isinstance(resource, list):
+                    if len(resource) > 0:
+                        this_relation = self.build_sqlalchemy_model(resource[0], with_relationship=False)
+                    else:
+                        this_relation = None
                 else:
                     this_relation = self.build_sqlalchemy_model(resource, with_relationship=False)
 
             if is_a_list:
-                build_relationships.append({ key : this_relation })
+                builded_relationships.append({ key : this_relation })
             else:
-                build_relationships = { key : this_relation}
+                builded_relationships = { key : this_relation}
 
-        return build_relationships
+        return builded_relationships
 
     def self_link(self, resource, namespace, id):
         """
@@ -110,18 +113,52 @@ class Cereal(object):
         # build attributes
         attributes = {}
         for k in fields:
-            attributes[k] = model.__dict__[k]
+            attributes[k] = getattr(model, k)
+
+        resource_id = getattr(model, id)
+        no_id = resource_id == None
 
         # format
         resource_object = jsonapi.formatter.ResourceObject(
-                                            id=model.__dict__[id],
+                                            id=resource_id,
                                             type=type,
                                             attributes=attributes,
                                             relationships=relationships,
                                             meta=meta,
-                                            links=links)
+                                            links=links,
+                                            no_id=no_id)
 
         return resource_object.__jsonapi__()
+
+    def decereal_jsonapi_object(self, json_obj):
+        """
+        Receive an json object with type in `type_model_dict` and returns the
+        appropriate sqlalchemy model
+        """
+
+        model = self.type_model_dict[json_obj['type']]
+        new_obj = model(**json_obj['attributes'])
+
+        # there is any relationship?
+        if 'relationships' in json_obj:
+
+            relation_dict = json_obj['relationships']
+            for key, value in relation_dict.items():
+                if not key.startswith('_'):
+                    is_list = isinstance(value, list)
+                    new_obj.__dict__[key] = [] if is_list else None
+
+                    # create a relation object and append whether is a list of relations
+                    if is_list:
+                        for relation in value:
+                            relation_model = self.type_model_dict[relation['type']]
+                            new_relation = relation_model(**relation['attributes'])
+                            new_obj.__dict__[key].append(new_relation)
+                    else:
+                        relation_model = self.type_model_dict[value['type']]
+                        new_obj.__dict__[key] = relation_model(**value['attributes'])
+
+        return new_obj
 
     def decereal(self, str):
         """deserialize the json string and returns a sqlalchemy model or a list of it"""
@@ -136,12 +173,10 @@ class Cereal(object):
 
         if is_a_list:
             for i in json_data:
-                model = self.type_model_dict[i['type']]
-                new_obj = model(**i['attributes'])
+                new_obj = self.decereal_jsonapi_object(i)
                 list_of_model.append(new_obj)
         else:
-            model = self.type_model_dict[i['type']]
-            new_obj = model.__new__(model.__class__, **i['attributes'])
+            new_obj = self.decereal_jsonapi_object(json_data)
             list_of_model.append(new_obj)
 
         return list_of_model
