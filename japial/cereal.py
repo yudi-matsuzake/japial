@@ -18,7 +18,7 @@ class Cereal(object):
         """returns module + '.' + class of an object"""
         return obj.__module__ + '.' + obj.__name__
 
-    def __init__(self, base, namespace='/api', meta=None, links=None, jsonapi=None, included=None):
+    def __init__(self, base, session_factory, namespace='/api', meta=None, links=None, jsonapi=None, included=None):
         """japial init"""
 
         self.base = base
@@ -28,6 +28,7 @@ class Cereal(object):
         self.links = links
         self.jsonapi = jsonapi
         self.included = included
+        self.session_factory = session_factory
 
         for name, model in base._decl_class_registry.items():
             if name.startswith('_'):
@@ -39,7 +40,7 @@ class Cereal(object):
     def build_relationships(self, model):
         model_relationships  = model.__mapper__.relationships.items()
         is_a_list            = len(model_relationships) > 1
-        builded_relationships = [] if is_a_list else None
+        builded_relationships = {}
 
         # this model does not have a relationship
         if len(model_relationships) == 0:
@@ -54,21 +55,18 @@ class Cereal(object):
             # there is a list of relations in this relationship?
             if is_a_list_of_this_relation:
                 for relation in resource:
-                    builded = self.build_sqlalchemy_model(relation, with_relationship=False)
+                    builded = self.build_sqlalchemy_model(relation, is_relationship=True)
                     this_relation.append(builded)
             else:
                 if isinstance(resource, list):
                     if len(resource) > 0:
-                        this_relation = self.build_sqlalchemy_model(resource[0], with_relationship=False)
+                        this_relation = self.build_sqlalchemy_model(resource[0], is_relationship=True)
                     else:
                         this_relation = None
                 else:
-                    this_relation = self.build_sqlalchemy_model(resource, with_relationship=False)
+                    this_relation = self.build_sqlalchemy_model(resource, is_relationship=True)
 
-            if is_a_list:
-                builded_relationships.append({ key : this_relation })
-            else:
-                builded_relationships = { key : this_relation}
+            builded_relationships[key] = this_relation
 
         return builded_relationships
 
@@ -81,7 +79,7 @@ class Cereal(object):
         self_link         = self_link.format(namespace, resource, id)
         return self_link
 
-    def build_sqlalchemy_model(self, model, with_relationship=True):
+    def build_sqlalchemy_model(self, model, is_relationship=False, with_relationship=True):
         """build a sqlalchemy model and returns a jsonapi formatted dictionary"""
 
         # define attributes
@@ -93,8 +91,10 @@ class Cereal(object):
         resource      = check_key_or_default(model, '__japial_resource__', model.__tablename__)
         namespace     = check_key_or_default(model, '__japial_namespace__', self.namespace)
 
-        if with_relationship:
+        if not is_relationship and with_relationship:
             with_relationship = check_key_or_default(model, '__japial_with_relationships__', with_relationship)
+        else:
+            with_relationship = False
 
         # ignore fields for attributes
         ignored_by_default = { id }
@@ -108,7 +108,8 @@ class Cereal(object):
         links             = { "self" : self.self_link(resource, namespace, getattr(model, id)) }
 
         # relationships
-        relationships = self.build_relationships(model) if with_relationship else None
+        if not is_relationship and with_relationship: 
+            relationships = self.build_relationships(model)
 
         # build attributes
         attributes = {}
@@ -119,7 +120,16 @@ class Cereal(object):
         no_id = resource_id == None
 
         # format
-        resource_object = jsonapi.formatter.ResourceObject(
+        if is_relationship:
+            resource_object = jsonapi.formatter.RelationshipObject(
+                                            id=resource_id,
+                                            type=type,
+                                            attributes=attributes,
+                                            meta=meta,
+                                            links=links)
+
+        else:
+            resource_object = jsonapi.formatter.ResourceObject(
                                             id=resource_id,
                                             type=type,
                                             attributes=attributes,
@@ -129,6 +139,13 @@ class Cereal(object):
                                             no_id=no_id)
 
         return resource_object.__jsonapi__()
+
+    def fetch_element_by_id(self, model, id):
+        session = self.session_factory()
+        element = session.query(model).get(id)
+        session.expunge(element)
+        session.close()
+        return element
 
     def decereal_jsonapi_object(self, json_obj):
         """
@@ -145,18 +162,32 @@ class Cereal(object):
             relation_dict = json_obj['relationships']
             for key, value in relation_dict.items():
                 if not key.startswith('_'):
-                    is_list = isinstance(value, list)
-                    new_obj.__dict__[key] = [] if is_list else None
+                    is_list_of_relation = isinstance(value, list)
 
-                    # create a relation object and append whether is a list of relations
-                    if is_list:
-                        for relation in value:
-                            relation_model = self.type_model_dict[relation['type']]
-                            new_relation = relation_model(**relation['attributes'])
-                            new_obj.__dict__[key].append(new_relation)
+                    # TODO: elegantly remove the following code redundancy
+                    #       when create new_relation
+                    # the relationship uses list?
+                    if model.__mapper__.relationships[key].uselist:
+                        setattr(new_obj, key, [])
+
+                        if is_list_of_relation:
+                            for relation in value:
+                                relation_data = relation['data']
+                                relation_model = self.type_model_dict[relation_data['type']]
+                                new_relation = self.fetch_element_by_id(relation_model, relation_data['id'])
+                                getattr(new_obj, key).append(new_relation)
+                        else:
+                            relation_data = value['data']
+                            relation_model = self.type_model_dict[relation_data['type']]
+                            new_relation = self.fetch_element_by_id(relation_model, relation_data['id'])
+                            getattr(new_obj, key).append(new_relation)
+
+                    # the relationship does not use list
                     else:
-                        relation_model = self.type_model_dict[value['type']]
-                        new_obj.__dict__[key] = relation_model(**value['attributes'])
+                        relation_data = value[0]['data'] if is_list_of_relation else value['data']
+                        relation_model = self.type_model_dict[relation_data['type']]
+                        new_relation = self.fetch_element_by_id(relation_model, relation_data['id'])
+                        setattr(new_obj, key, new_relation)
 
         return new_obj
 
