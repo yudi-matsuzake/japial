@@ -83,13 +83,14 @@ class Cereal(object):
         """build a sqlalchemy model and returns a jsonapi formatted dictionary"""
 
         # define attributes
-        all_fields    = filter(lambda k : not k.startswith('_'), model.__dict__.keys())
+        all_fields    = filter(lambda k : not k.startswith('_'), model.__class__.__dict__.keys())
         fields        = check_key_or_default(model, '__japial_fields__', all_fields)
         id            = check_key_or_default(model, '__japial_id__', 'id')
         type          = check_key_or_default(model, '__japial_type__', model.__tablename__)
         meta          = check_key_or_default(model, '__japial_meta__', None)
         resource      = check_key_or_default(model, '__japial_resource__', model.__tablename__)
         namespace     = check_key_or_default(model, '__japial_namespace__', self.namespace)
+        cereal_attr   = check_key_or_default(model, '__japial_cereal__', None)
 
         if not is_relationship and with_relationship:
             with_relationship = check_key_or_default(model, '__japial_with_relationships__', with_relationship)
@@ -101,7 +102,7 @@ class Cereal(object):
         for k, r in model.__mapper__.relationships.items():
             for j in r.local_columns:
                 ignored_by_default |= { j.name, k }
-        ignore_fields = check_key_or_default(model, '__japial_ignore_fields__', ignored_by_default)
+        ignore_fields = check_key_or_default(model, '__japial_cereal_ignore_fields__', ignored_by_default)
         fields = set(fields) - set(ignore_fields)
 
         # link
@@ -114,7 +115,13 @@ class Cereal(object):
         # build attributes
         attributes = {}
         for k in fields:
-            attributes[k] = getattr(model, k)
+            # there is a user-defined function cereal for attr?
+            if cereal_attr != None and k in cereal_attr:
+                get_dict = getattr(model, cereal_attr[k])
+                for ki, ki_value in get_dict(k).items():
+                    attributes[ki] = ki_value
+            else:
+                attributes[k] = getattr(model, k)
 
         resource_id = getattr(model, id)
         no_id = resource_id == None
@@ -143,7 +150,8 @@ class Cereal(object):
     def fetch_element_by_id(self, model, id):
         session = self.session_factory()
         element = session.query(model).get(id)
-        session.expunge(element)
+        if element:
+            session.expunge(element)
         session.close()
         return element
 
@@ -154,6 +162,21 @@ class Cereal(object):
         """
 
         model = self.type_model_dict[json_obj['type']]
+
+        # ignore fields method
+        fields        = filter(lambda k : not k.startswith('_'), model.__dict__.keys())
+        ignore_fields = check_key_or_default(model, '__japial_decereal_ignore_fields__', {})
+        fields        = set(fields) - set(ignore_fields)
+
+        # lookup for user pre-defined function
+        decereal_attr = getattr(model, '__japial_decereal__') if hasattr(model, '__japial_decereal__') else None
+
+        if decereal_attr != None:
+            for ki, ki_value in decereal_attr.items():
+                if ki in fields and ki in json_obj['attributes']:
+                    decereal_func = getattr(model, ki_value)
+                    json_obj['attributes'][ki] = decereal_func(ki, json_obj['attributes'][ki], json_obj)
+
         new_obj = model(**json_obj['attributes'])
 
         # there is any relationship?
@@ -161,7 +184,7 @@ class Cereal(object):
 
             relation_dict = json_obj['relationships']
             for key, value in relation_dict.items():
-                if not key.startswith('_'):
+                if not key.startswith('_') and value != None:
                     is_list_of_relation = isinstance(value, list)
 
                     # TODO: elegantly remove the following code redundancy
@@ -185,6 +208,7 @@ class Cereal(object):
                     # the relationship does not use list
                     else:
                         relation_data = value[0]['data'] if is_list_of_relation else value['data']
+                        print 'relation_data: ', relation_data
                         relation_model = self.type_model_dict[relation_data['type']]
                         new_relation = self.fetch_element_by_id(relation_model, relation_data['id'])
                         setattr(new_obj, key, new_relation)

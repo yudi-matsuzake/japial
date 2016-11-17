@@ -1,4 +1,11 @@
 japial
 ------
 
-**j**sonapi and sql**al**chmy integration.
+**j**son**api** and sql**al**chemy integration.
+
+Installation
+------------
+
+```shell
+$ pip install -e .
+```
