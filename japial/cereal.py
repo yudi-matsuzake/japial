@@ -46,25 +46,28 @@ class Cereal(object):
         if len(model_relationships) == 0:
             return None
 
+        # TODO: make a function to build relationships only
         # there is a list of relationships?
         for key, r in model_relationships:
             resource = getattr(model, key)
+            if resource == None:
+                continue
             is_a_list_of_this_relation = isinstance(resource, list) and len(resource) > 1
-            this_relation = [] if is_a_list_of_this_relation else None
+            this_relation = { 'data' : [] if is_a_list_of_this_relation else None }
 
             # there is a list of relations in this relationship?
             if is_a_list_of_this_relation:
                 for relation in resource:
                     builded = self.build_sqlalchemy_model(relation, is_relationship=True)
-                    this_relation.append(builded)
+                    this_relation['data'].append(builded['data'])
             else:
                 if isinstance(resource, list):
                     if len(resource) > 0:
-                        this_relation = self.build_sqlalchemy_model(resource[0], is_relationship=True)
+                        this_relation['data'] = self.build_sqlalchemy_model(resource[0], is_relationship=True)['data']
                     else:
-                        this_relation = None
+                        this_relation['data'] = None
                 else:
-                    this_relation = self.build_sqlalchemy_model(resource, is_relationship=True)
+                    this_relation['data'] = self.build_sqlalchemy_model(resource, is_relationship=True)['data']
 
             builded_relationships[key] = this_relation
 
@@ -82,6 +85,7 @@ class Cereal(object):
     def build_sqlalchemy_model(self, model, is_relationship=False, with_relationship=True):
         """build a sqlalchemy model and returns a jsonapi formatted dictionary"""
 
+
         # define attributes
         all_fields    = filter(lambda k : not k.startswith('_'), model.__class__.__dict__.keys())
         fields        = check_key_or_default(model, '__japial_fields__', all_fields)
@@ -97,33 +101,35 @@ class Cereal(object):
         else:
             with_relationship = False
 
-        # ignore fields for attributes
-        ignored_by_default = { id }
-        for k, r in model.__mapper__.relationships.items():
-            for j in r.local_columns:
-                ignored_by_default |= { j.name, k }
-        ignore_fields = check_key_or_default(model, '__japial_cereal_ignore_fields__', ignored_by_default)
-        fields = set(fields) - set(ignore_fields)
-
-        # link
-        links             = { "self" : self.self_link(resource, namespace, getattr(model, id)) }
-
-        # relationships
+        attributes = None
+        links      = None
         if not is_relationship and with_relationship: 
+            # ignore fields for attributes
+            ignored_by_default = { id }
+            for k, r in model.__mapper__.relationships.items():
+                for j in r.local_columns:
+                    ignored_by_default |= { j.name, k }
+            ignore_fields = check_key_or_default(model, '__japial_cereal_ignore_fields__', ignored_by_default)
+            fields = set(fields) - set(ignore_fields)
+
+            # build attributes
+            attributes = {}
+            for k in fields:
+                # there is a user-defined function cereal for attr?
+                if cereal_attr != None and k in cereal_attr:
+                    get_dict = getattr(model, cereal_attr[k])
+                    for ki, ki_value in get_dict(k).items():
+                        attributes[ki] = ki_value
+                else:
+                    attributes[k] = getattr(model, k)
+
+            # relationships
             relationships = self.build_relationships(model)
 
-        # build attributes
-        attributes = {}
-        for k in fields:
-            # there is a user-defined function cereal for attr?
-            if cereal_attr != None and k in cereal_attr:
-                get_dict = getattr(model, cereal_attr[k])
-                for ki, ki_value in get_dict(k).items():
-                    attributes[ki] = ki_value
-            else:
-                attributes[k] = getattr(model, k)
+            # link
+            links = { "self" : self.self_link(resource, namespace, getattr(model, id)) } if hasattr(model, id) else None
 
-        resource_id = getattr(model, id)
+        resource_id = getattr(model, id) if hasattr(model, id) else None
         no_id = resource_id == None
 
         # format
@@ -131,7 +137,6 @@ class Cereal(object):
             resource_object = jsonapi.formatter.RelationshipObject(
                                             id=resource_id,
                                             type=type,
-                                            attributes=attributes,
                                             meta=meta,
                                             links=links)
 
@@ -208,7 +213,6 @@ class Cereal(object):
                     # the relationship does not use list
                     else:
                         relation_data = value[0]['data'] if is_list_of_relation else value['data']
-                        print 'relation_data: ', relation_data
                         relation_model = self.type_model_dict[relation_data['type']]
                         new_relation = self.fetch_element_by_id(relation_model, relation_data['id'])
                         setattr(new_obj, key, new_relation)

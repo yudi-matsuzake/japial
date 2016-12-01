@@ -115,7 +115,6 @@ class RelationshipObject(object):
     def __init__(self,
                  id            = None,
                  type          = None,
-                 attributes    = None,
                  links         = None,
                  meta          = None):
 
@@ -123,13 +122,12 @@ class RelationshipObject(object):
         specification_must(
                 'A “relationship object” MUST contain at least one of the following:'
                 'links, data, meta',
-                links != None or meta != None or id != None or type != None or attributes != None)
+                links != None or meta != None or id != None or type != None)
 
         # --------------------------------------------------
 
         self.id            = id
         self.type          = type
-        self.attributes    = attributes
         self.links         = links
         self.meta          = meta
 
@@ -144,10 +142,6 @@ class RelationshipObject(object):
             if 'data' not in resource_object:
                 resource_object['data'] = {}
             resource_object['data']['type'] = self.type
-        if self.attributes != None:
-            if 'data' not in resource_object:
-                resource_object['data'] = {}
-            resource_object['data']['attributes'] = self.attributes
         if self.links != None:
             resource_object['links'] = self.links
         if self.meta != None:
